@@ -1,5 +1,5 @@
-{application, lager_rsyslog, [
-    {description, "Rsyslog backend for Lager"},
+{application, lager_syslogng, [
+    {description, "Syslog-ng backend for Lager"},
     {vsn, git},
     {modules, []},
     {applications, [

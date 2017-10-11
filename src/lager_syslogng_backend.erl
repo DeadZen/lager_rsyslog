@@ -14,9 +14,9 @@
 %% specific language governing permissions and limitations
 %% under the License.
 
-%% @doc Rsyslog backend for lager.
+%% @doc Syslog-ng backend for lager.
 
--module(lager_rsyslog_backend).
+-module(lager_syslogng_backend).
 
 -behaviour(gen_event).
 
@@ -41,15 +41,16 @@
     dest_port,
     mask,
     ident,
+    limit,
     facility,
     formatter
 }).
 
--include("lager_rsyslog.hrl").
+-include("lager_syslogng.hrl").
 
 config_to_id(Config) ->
-    Ident = lager_rsyslog_util:identity(Config),
-    Facility = lager_rsyslog_util:facility(Config),
+    Ident = lager_syslogng_util:identity(Config),
+    Facility = lager_syslogng_util:facility(Config),
     {?MODULE, {Ident, Facility}}.
 
 
@@ -59,12 +60,13 @@ init(Config) when is_list(Config) ->
         id = config_to_id(Config),
         hostname = net_adm:localhost(),
         socket = Socket,
-        dest_addr = lager_rsyslog_util:dest_addr(Config),
-        dest_port = lager_rsyslog_util:dest_port(Config),
-        mask = lager_rsyslog_util:mask(Config),
-        ident = lager_rsyslog_util:identity(Config),
-        facility = lager_rsyslog_util:facility(Config),
-        formatter = lager_rsyslog_util:formatter(Config)
+        dest_addr = lager_syslogng_util:dest_addr(Config),
+        dest_port = lager_syslogng_util:dest_port(Config),
+        mask = lager_syslogng_util:mask(Config),
+        ident = lager_syslogng_util:identity(Config),
+        limit = lager_syslogng_util:limit(Config),
+        facility = lager_syslogng_util:facility(Config),
+        formatter = lager_syslogng_util:formatter(Config)
     }}.
 
 
@@ -76,7 +78,7 @@ handle_call(get_loglevel, St) ->
     {ok, St#st.mask, St};
 
 handle_call({set_loglevel, Level}, St) ->
-    Mask = lager_rsyslog_util:mask(Level),
+    Mask = lager_syslogng_util:mask(Level),
     {ok, ok, St#st{mask = Mask}};
 
 handle_call(_Request, St) ->
@@ -87,10 +89,17 @@ handle_event({log, Message}, St) ->
     case lager_util:is_loggable(Message, St#st.mask, St#st.id) of
         true ->
             LagerLevel = lager_msg:severity(Message),
-            RsyslogLevel = lager_rsyslog_util:level(LagerLevel),
+            LagerMeta = lists:usort(lager_msg:metadata(Message)),
+            SyslogLevel = lager_syslogng_util:level(LagerLevel),
+
             {FmtMod, FmtCfg} = St#st.formatter,
             MsgStr = [FmtMod:format(Message, FmtCfg)],
-            send_log(St, RsyslogLevel, MsgStr),
+
+            Meta = lager_syslogng_util:metadata(St#st.limit, LagerMeta),
+            Pid = lager_syslogng_util:pid(LagerMeta),
+
+            MsgId = "-", %% @todo Maybe a CRC of preformatted "log ~p string"
+            send_log(St, SyslogLevel, Pid, MsgId, Meta, MsgStr),
             {ok, St};
         false ->
             {ok, St}
@@ -108,12 +117,14 @@ code_change(_OldVsn, St, _Extra) ->
     {ok, St}.
 
 
-send_log(St, Level, Msg) ->
-    Pre = io_lib:format("<~B>~B ~s ~s ~s ", [
+send_log(St, Level, Pid, MsgId, Meta, Msg) ->
+    Pre = io_lib:format("<~B>~B ~s ~s ~s ~s ~s ~s ", [
         St#st.facility bor Level,
         ?SYSLOG_VERSION,
-        lager_rsyslog_util:iso8601_timestamp(),
+        lager_syslogng_util:iso8601_timestamp(),
         St#st.hostname,
-        St#st.ident
+        St#st.ident, Pid, MsgId, Meta
     ]),
     gen_udp:send(St#st.socket, St#st.dest_addr, St#st.dest_port, [Pre, Msg]).
+
+

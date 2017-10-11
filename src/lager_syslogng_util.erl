@@ -12,21 +12,25 @@
 %% specific language governing permissions and limitations
 %% under the License.
 
--module(lager_rsyslog_util).
+-module(lager_syslogng_util).
 
 -export([
+    drop/2,
+    metadata/2,
     dest_addr/1,
     dest_port/1,
     identity/1,
     facility/1,
     mask/1,
     level/1,
+    limit/1, 
+    pid/1,
     formatter/1,
     iso8601_timestamp/0
 ]).
 
 
--include("lager_rsyslog.hrl").
+-include("lager_syslogng.hrl").
 
 
 dest_addr(Config) ->
@@ -136,9 +140,67 @@ formatter(Config) ->
             ?DEFAULT_FORMATTER
     end.
 
+limit(Config) ->
+    case lists:keyfind(limit, 1, Config) of
+        {limit, Limit} when is_integer(Limit) ->
+            Limit;
+        false ->
+            20000
+    end.
+
+pid(Meta) ->
+    case lists:keyfind(pid, 1, Meta) of
+	{_, Pid} -> to_list(Pid);
+	false	  -> "-"
+    end.
+
+drop(WL, Meta) when is_integer(WL) ->
+    lists:filter(fun(T) -> erts_debug:size(T) < WL end, Meta).
+
+metadata(Limit, LagerMeta0) ->
+    LagerMeta1  = lager_syslogng_util:drop(Limit, LagerMeta0),
+
+    {Node, LagerMeta} = case lists:keyfind(node, 1, LagerMeta1) of
+	{_, Node0} -> {Node0, lists:keydelete(node, 1, LagerMeta1)};
+	false	  -> {node(), LagerMeta1}
+    end,
+
+    case LagerMeta of
+	[] -> "-";
+	_ -> Meta0 = [io_lib:format("~s=\"~s\" ", 
+		      [escape(to_list(K)),
+		       escape(to_list(V))]) || {K,V} <- LagerMeta ],
+	     io_lib:format("[~s node=\"~s\"]", [Meta0, to_list(Node)])
+    end.
+
+
+escape([]) -> [];
+escape([H|T]) when H=:=$"; H=:=$]; H=:=$\ ->[$\\, H|escape(T)];
+escape([H|T]) -> [H|escape(T)].
+
+to_list(Value) when is_integer(Value) ->
+    integer_to_list(Value);
+to_list(Value) when is_pid(Value) ->
+    pid_to_list(Value);
+to_list(Value) when is_binary(Value) ->
+    binary_to_list(Value);
+to_list(Value) when is_tuple(Value) ->
+    tuple_to_list(Value);
+to_list(Value) when is_atom(Value) ->
+    atom_to_list(Value);
+to_list(Value) when is_list(Value) ->
+    Value;
+to_list(Value) when is_float(Value) ->
+    Mochinum = erlang:function_exported(mochinum, digits, 1),
+    case Mochinum of
+	true -> mochinum:digits(Value);
+	false -> float_to_list(Value)
+    end.
 
 iso8601_timestamp() ->
     {_,_,Micro} = Now = os:timestamp(),
     {{Year,Month,Date},{Hour,Minute,Second}} = calendar:now_to_datetime(Now),
     Format = "~4.10.0B-~2.10.0B-~2.10.0BT~2.10.0B:~2.10.0B:~2.10.0B.~6.10.0BZ",
     io_lib:format(Format, [Year, Month, Date, Hour, Minute, Second, Micro]).
+
+
